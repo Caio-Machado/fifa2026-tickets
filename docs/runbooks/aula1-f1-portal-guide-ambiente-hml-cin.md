@@ -26,7 +26,7 @@ Há **duas divisões de trabalho** bem distintas:
 | O quê | Como é feito | Onde |
 |---|---|---|
 | **AMBIENTE** (RG, SQL, Service Bus, Function App, etc.) | **À mão, no Portal do Azure** | Portal (este guia) |
-| **CÓDIGO + MIGRATIONS** | **GitHub Actions** (workflows prontos) | Seu fork |
+| **CÓDIGO + MIGRATIONS + FRONTEND** | **GitHub Actions** (workflow único `Lab Oitavas de Final`) | Seu fork |
 
 ```
                       VOCÊ (Portal Azure)                    SEU FORK (GitHub Actions)
@@ -37,12 +37,14 @@ Há **duas divisões de trabalho** bem distintas:
   │  + App Settings + SCM basic-auth              │   │  (1) você cria o ambiente vazio
   └─────────────────────────────────────────────┘   │
                                                       ▼
-                              ┌───────────────────────────────────────────┐
-                              │  migrate-phase-01.yml  → aplica colunas no  │
-                              │                          banco (idempotente)│
-                              │  deploy-phase-01.yml   → publica a Function │
-                              │                          + smoke test       │
-                              └───────────────────────────────────────────┘
+                              ┌───────────────────────────────────────────────┐
+                              │  Workflow ÚNICO "Lab Oitavas de Final" com o    │
+                              │  input `acao`:                                  │
+                              │    migrations → aplica colunas no banco (idemp.)│
+                              │    function   → publica a Function + smoke test │
+                              │    frontend   → builda + publica o portal       │
+                              │    tudo       → migrations → function → frontend │
+                              └───────────────────────────────────────────────┘
                                                       │
                                                       ▼
    Fluxo em runtime:  POST /api/v2/purchase → 202 + correlationId
@@ -123,7 +125,7 @@ Deixa o banco sem acesso público; a Function alcança via VNet.
 3. **Private Endpoint:** no SQL server → **Networking → Private access → `+ Create a private endpoint`** → coloque na `snet-sql` → habilite **Private DNS integration** (cria a zona `privatelink.database.windows.net`).
 4. Em **Networking → Public access** do SQL: **Disable** (`Public network access = Disabled`).
 
-> O workflow de migrations (`migrate-phase-01.yml`) **já sabe lidar com SQL privado**: ele liga o acesso público temporariamente só para o IP do runner, roda as migrations e **reverte tudo** ao final (inclusive em caso de falha).
+> O workflow único `Lab Oitavas de Final` (ação `migrations`) **já sabe lidar com SQL privado**: ele liga o acesso público temporariamente só para o IP do runner, roda as migrations e **reverte tudo** ao final (inclusive em caso de falha).
 
 #### Opção B — SQL **público com firewall** (mais simples — recomendado p/ alunos)
 
@@ -131,7 +133,7 @@ Deixa o banco sem acesso público; a Function alcança via VNet.
 2. **Firewall rules:** marque **"Allow Azure services and resources to access this server"** (permite a Function alcançar) e adicione seu IP atual se quiser conectar pelo SSMS/Azure Data Studio.
 3. `Public network access = Enabled`.
 
-> Mesmo na Opção B, o `migrate-phase-01.yml` continua funcionando: ele abre/fecha o acesso de forma idempotente — se já estiver público, apenas garante a regra do runner e remove no final.
+> Mesmo na Opção B, o workflow único (ação `migrations`) continua funcionando: ele abre/fecha o acesso de forma idempotente — se já estiver público, apenas garante a regra do runner e remove no final.
 
 ### 2.4 Popular o banco (schema + dados)
 
@@ -256,7 +258,7 @@ A Function precisa de um Storage para estado interno (triggers, locks, logs do h
 1. Function → **Settings → Configuration → General settings**.
 2. **SCM Basic Auth Publishing Credentials:** **On** → **`Save`**.
 
-> Sem isso, o `deploy-phase-01.yml` falha com **401** ao publicar via publish profile.
+> Sem isso, o deploy da Function (ação `function` do workflow único) falha com **401** ao publicar via publish profile.
 
 ✅ **Checkpoint:** Function criada no plano B1, Always On ligado, SCM basic-auth ligado (e VNet integration se for Opção A).
 
@@ -269,7 +271,7 @@ A Function consumer grava em `purchases` usando colunas que **ainda não existem
 
 Os scripts estão em `fifa2026-api/database/migrations/phase-01.sql` e `phase-03.sql` — **aditivos e idempotentes** (rodar de novo não causa efeito colateral).
 
-> **Por que via Actions e não na mão?** Se você escolheu **SQL privado (Opção A)**, um runner do GitHub (internet pública) não alcança o banco. O `migrate-phase-01.yml` resolve isso de forma reproduzível: liga o acesso público + abre o firewall **só para o IP do runner**, roda as migrations e **reverte tudo** (remove a regra + desliga o público), **mesmo em caso de falha**. É um passo **pré-workshop** (roda uma vez por ambiente), separado do deploy de código. No **SQL público (Opção B)** o mesmo workflow também funciona, apenas garantindo/removendo a regra do runner.
+> **Por que via Actions e não na mão?** Se você escolheu **SQL privado (Opção A)**, um runner do GitHub (internet pública) não alcança o banco. O workflow único `Lab Oitavas de Final` (ação `migrations`) resolve isso de forma reproduzível: liga o acesso público + abre o firewall **só para o IP do runner**, roda as migrations e **reverte tudo** (remove a regra + desliga o público), **mesmo em caso de falha**. É um passo **pré-workshop** (roda uma vez por ambiente). No **SQL público (Opção B)** o mesmo workflow também funciona, apenas garantindo/removendo a regra do runner.
 
 ### 8.1 Pré-requisito — Service Principal (App Registration) pelo Portal (no SEU tenant)
 
@@ -325,11 +327,11 @@ No **seu fork** → **Settings → Secrets and variables → Actions**:
 
 ### 8.3 Rodar o workflow
 
-No seu fork → **Actions → "Migrate Phase 01 — DB schema" → `Run workflow`** (escolha a branch `main`).
+No seu fork → **Actions → "Lab Oitavas de Final" → `Run workflow`** → em **`acao`** escolha **`migrations`** (escolha a branch `main`).
 
-> 🖱️ **Disparo manual apenas:** este workflow **não roda sozinho** (só tem `workflow_dispatch`). Você precisa clicar em **Run workflow** explicitamente.
+> 🖱️ **Disparo manual apenas:** este workflow **não roda sozinho** (só tem `workflow_dispatch`). Você precisa clicar em **Run workflow** explicitamente e escolher a ação.
 
-O workflow faz: `az login` (SP) → liga público + abre firewall do runner → aplica `phase-01.sql` e `phase-03.sql` (via `azure/sql-action`, que entende os batches `GO`) → **reverte** o acesso. Confira no log das migrations as colunas `source`, `correlation_id`, `entra_oid` e os índices `UQ_purchases_correlation_id` / `IX_purchases_entra_oid`.
+O workflow (ação `migrations`) faz: `az login` (SP) → liga público + abre firewall do runner → aplica `phase-01.sql` e `phase-03.sql` (via `azure/sql-action`, que entende os batches `GO`) → **reverte** o acesso. Confira no log dos steps `[migrations]` as colunas `source`, `correlation_id`, `entra_oid` e os índices `UQ_purchases_correlation_id` / `IX_purchases_entra_oid`.
 
 ✅ **Checkpoint:** workflow verde; as 3 colunas existem na tabela `purchases`.
 
@@ -365,9 +367,12 @@ No **seu fork** → **Settings → Secrets and variables → Actions**:
 | Tipo | Nome | O que é | Onde você pega o SEU valor |
 |---|---|---|---|
 | Variable | `FUNCTION_APP_NAME` | nome da Function App de destino | `<seu-func>` |
+| Variable | `FUNCTION_V2_URL` | URL **raiz** da Function (sem `/api`) — embutida no frontend para a compra v2 async | `https://<seu-func>.azurewebsites.net` |
 | Secret | `FUNCTION_PUBLISH_PROFILE` | publish profile da Function | pelo Portal (**Overview → `Get publish profile`**) ou via Cloud Shell PowerShell (bloco abaixo) |
 
 > Garanta que o **SCM Basic Auth** está **On** na Function (Fase 7.4) — senão a action retorna **401**.
+
+> ⚠️ **CORS na Function (compra v2 do navegador):** no fluxo das Oitavas o **navegador chama a Function direto** (URL `FUNCTION_V2_URL`), então a Function precisa permitir a origem do frontend. Pelo Portal: Function → **API → CORS** → adicione `https://<seu-frontend>.azurewebsites.net` em **Allowed Origins** → **`Save`**. (Via CLI: `az functionapp cors add -g <seu-rg> -n <seu-func> --allowed-origins "https://<seu-frontend>.azurewebsites.net"`.) Sem isso, a compra v2 falha no browser com erro de CORS.
 
 > **Pegar o publish profile (Cloud Shell PowerShell):** abra o **Cloud Shell** no modo **PowerShell** e rode (substitua RG e Function App):
 > ```powershell
@@ -378,12 +383,12 @@ No **seu fork** → **Settings → Secrets and variables → Actions**:
 
 ### 10.2 Disparar o deploy
 
-No seu fork → **Actions → "Deploy Phase 01 — Service Bus + Functions" → `Run workflow`** (branch `main`).
-O workflow faz: restore → build → test → publish → deploy → **smoke test** (`POST /api/v2/purchase`, valida que a resposta tem `.correlationId`).
+No seu fork → **Actions → "Lab Oitavas de Final" → `Run workflow`** → em **`acao`** escolha **`function`** (branch `main`).
+O workflow (ação `function`) faz: restore → build → test → publish → deploy → **smoke test** (`POST /api/v2/purchase`, valida que a resposta tem `.correlationId`).
 
-> 🖱️ **Disparo manual apenas:** este workflow **não roda sozinho** (só tem `workflow_dispatch`). Nada é publicado até você clicar em **Run workflow**.
+> 🖱️ **Disparo manual apenas:** este workflow **não roda sozinho** (só tem `workflow_dispatch`). Nada é publicado até você clicar em **Run workflow** e escolher a ação.
 
-✅ **Checkpoint:** workflow verde; o step **"Smoke test (AC-10)"** mostra `Smoke test OK — .correlationId presente`.
+✅ **Checkpoint:** workflow verde; o step **"[function] Smoke test (AC-10)"** mostra `Smoke test OK — .correlationId presente`.
 
 ---
 
@@ -454,7 +459,7 @@ curl -sS "https://<seu-func>.azurewebsites.net/api/v2/purchase" \
 | Apoio | Storage `<seu-storage>` |
 | Observabilidade | Log Analytics `<seu-log>` + App Insights `<seu-appi>` |
 | Identidade | App Registration `sp-fifa2026-migrate` (no seu tenant) |
-| Automação | Fork configurado: Variables + Secrets + 2 workflows (migrate + deploy) |
+| Automação | Fork configurado: Variables + Secrets + workflow único `Lab Oitavas de Final` (ação `migrations` / `function` / `frontend` / `tudo`) |
 
 ---
 
